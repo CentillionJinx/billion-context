@@ -150,6 +150,9 @@ export const LIVE_FILES = [
     // One Linux-only Node child reads fixture system CAs and exits within 10s;
     // no child ports or network I/O. In-process HTTPS fixtures use listen(0).
     "tests/upstream-ca-default-trust.test.ts",
+    // #6831: runs the import-graph gate script as a child process against a
+    // throwaway git fixture; no sockets — the entry is for the tripwire
+    "tests/check-test-import-graph.test.ts",
 ];
 
 /** Band width per live file: the zone ladder drifts +1 per EADDRINUSE retry;
