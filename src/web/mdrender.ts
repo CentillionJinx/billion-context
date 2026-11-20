@@ -34,6 +34,52 @@ export function makeMdRender(): MdRenderApi {
             .replace(/"/g, "&quot;");
     }
 
+    // Linear link/image scanner. The old per-rule regexes
+    // (/\[([^\]]+)\]\(([^)\s]+)\)/g and its image twin) backtracked one char
+    // at a time from EVERY opening bracket, rescanning the same suffix for
+    // each marker — O(n^2) on "[".repeat(n), stalling the server/panel event
+    // loop (issue #7358). j and q are shared forward pointers (start positions
+    // only increase), so every char is visited O(1) times in total.
+    // Match semantics are byte-identical to the old regexes: the label always
+    // ends at the FIRST ']' and the url at the FIRST ')', and a structurally
+    // complete [label](url) is always consumed — a bad URL scheme degrades to
+    // the fallback (label text for links, drop for images), never re-emitting
+    // the delimiters.
+    function scanDelimited(s: string, image: boolean, render: (label: string, url: string) => string): string {
+        const n = s.length;
+        let out = "";
+        let j = 0; // first ']' at or after the current label start
+        let q = 0; // first ')' at or after the current url start
+        let i = 0;
+        while (i < n) {
+            const c = s[i];
+            const imageStart = image && c === "!" && s[i + 1] === "[";
+            if (imageStart || (!image && c === "[")) {
+                const labelStart = i + (imageStart ? 2 : 1);
+                if (j < labelStart) j = labelStart;
+                while (j < n && s[j] !== "]") j++;
+                const k = j;
+                if (k < n && (image || k > labelStart) && s[k + 1] === "(") {
+                    const urlStart = k + 2;
+                    if (q < urlStart) q = urlStart;
+                    while (q < n && s[q] !== ")") q++;
+                    const p = q;
+                    if (p < n && p > urlStart) {
+                        const url = s.slice(urlStart, p);
+                        if (!/\s/.test(url)) {
+                            out += render(s.slice(labelStart, k), url);
+                            i = p + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            out += c;
+            i += 1;
+        }
+        return out;
+    }
+
     function inlineMd(s: string): string {
         let out = escape(s);
         out = out.replace(/`([^`]+)`/g, (_m, code: string) =>
@@ -43,18 +89,18 @@ export function makeMdRender(): MdRenderApi {
         // panel's own bundled-asset route (/__bili/blog-assets/*, see
         // web/blogfeed.ts). Quotes are already escaped by escape, so attribute
         // injection is impossible.
-        out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt: string, url: string) => {
-            if (/^(?:https?:\/\/|\/__bili\/blog-assets\/)/i.test(url)) return `<img class="md-img" src="${url}" alt="${alt}" />`;
-            return "";
-        });
+        out = scanDelimited(out, true, (alt, url) =>
+            /^(?:https?:\/\/|\/__bili\/blog-assets\/)/i.test(url)
+                ? `<img class="md-img" src="${url}" alt="${alt}" />`
+                : "");
         out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
         out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
         // [text](url) — only http/https/relative URLs survive; anything else
         // degrades to plain bracketed text (no javascript: vectors).
-        out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, text: string, url: string) => {
-            if (/^(https?:\/\/|\/)/i.test(url)) return `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`;
-            return text;
-        });
+        out = scanDelimited(out, false, (text, url) =>
+            /^(https?:\/\/|\/)/i.test(url)
+                ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`
+                : text);
         return out;
     }
 
